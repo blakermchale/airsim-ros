@@ -1,0 +1,9 @@
+CollisionInfo collision
+KinematicsState kinematics_estimated
+GeoPoint gps_location
+uint64 timestamp
+uint8 landed_state
+RCData rc_data
+bool ready
+string ready_message
+bool can_arm

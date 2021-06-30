@@ -1,0 +1,15 @@
+uint64 timestamp
+float64 pitch
+float64 roll
+float64 throttle
+float64 yaw
+uint8 switch1
+uint8 switch2
+uint8 switch3
+uint8 switch4
+uint8 switch5
+uint8 switch6
+uint8 switch7
+uint8 switch8
+bool is_initialized
+bool is_valid
