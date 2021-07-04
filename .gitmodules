@@ -1,0 +1,4 @@
+[submodule "airsim_ros/libs/AirSim"]
+	path = airsim_ros/libs/AirSim
+	url = https://github.com/microsoft/AirSim.git
+	branch = master
