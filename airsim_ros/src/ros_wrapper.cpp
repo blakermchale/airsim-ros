@@ -33,12 +33,41 @@ ROSWrapper::ROSWrapper(rclcpp::Node::SharedPtr nh, const std::string& host_ip) :
 
 void ROSWrapper::initializeRos()
 {
+    // Declare parameters
+    nh_->declare_parameter<int>("update_img_response_hz", 30);
+
     createRosPubsFromSettingsJson();
 }
 
 void ROSWrapper::initializeAirSim()
 {
+    // todo do not reset if already in air?
+    try {
 
+        if (airsim_mode_ == AIRSIM_MODE::DRONE) {
+            airsim_client_ = std::unique_ptr<msr::airlib::RpcLibClientBase>(new msr::airlib::MultirotorRpcLibClient(host_ip_));
+        }
+        else {
+            airsim_client_ = std::unique_ptr<msr::airlib::RpcLibClientBase>(new msr::airlib::CarRpcLibClient(host_ip_));
+        }
+        airsim_client_->confirmConnection();
+        airsim_client_images_.confirmConnection();
+        // airsim_client_lidar_.confirmConnection();
+
+        for (const auto& vehicle_name_ptr_pair : vehicle_name_ptr_map_) {
+            airsim_client_->enableApiControl(true, vehicle_name_ptr_pair.first); // todo expose as rosservice?
+            // airsim_client_->armDisarm(true, vehicle_name_ptr_pair.first); // todo exposes as rosservice?
+        }
+
+        // origin_geo_point_ = airsim_client_->getHomeGeoPoint("");
+        // // todo there's only one global origin geopoint for environment. but airsim API accept a parameter vehicle_name? inside carsimpawnapi.cpp, there's a geopoint being assigned in the constructor. by?
+        // origin_geo_point_msg_ = get_gps_msg_from_airsim_geo_point(origin_geo_point_);
+    }
+    catch (rpc::rpc_error& e) {
+        std::string msg = e.get_error().as<std::string>();
+        std::cout << "Exception raised by the API, something went wrong." << std::endl
+                  << msg << std::endl;
+    }
 }
 
 void ROSWrapper::createRosPubsFromSettingsJson()
@@ -54,6 +83,7 @@ void ROSWrapper::createRosPubsFromSettingsJson()
     for (const auto& curr_vehicle_elem : AirSimSettings::singleton().vehicles) {
         auto& vehicle_setting = curr_vehicle_elem.second;
         auto curr_vehicle_name = curr_vehicle_elem.first;
+        RCLCPP_DEBUG(nh_->get_logger(), "Found vehicle `%s` in settings.", curr_vehicle_name.c_str());
         setNansToZerosInPose(*vehicle_setting);
 
         std::unique_ptr<VehicleROS> vehicle_ros = nullptr;
@@ -74,6 +104,7 @@ void ROSWrapper::createRosPubsFromSettingsJson()
         for (auto& curr_camera_elem : vehicle_setting->cameras) {
             auto& camera_setting = curr_camera_elem.second;
             auto& curr_camera_name = curr_camera_elem.first;
+            RCLCPP_DEBUG(nh_->get_logger(), "Found camera `%s` from vehicle `%s` in settings.", curr_camera_name.c_str(), curr_vehicle_name.c_str());
 
             setNansToZerosInPose(*vehicle_setting, camera_setting);
             // appendStaticCameraTf(vehicle_ros.get(), curr_camera_name, camera_setting); // TODO: add back
@@ -106,6 +137,16 @@ void ROSWrapper::createRosPubsFromSettingsJson()
             // push back pair (vector of image captures, current vehicle name)
             airsim_img_request_vehicle_name_pair_vec_.push_back(std::make_pair(current_image_request_vec, curr_vehicle_name));
         }
+    }
+
+    // if >0 cameras, add one more thread for img_request_timer_cb
+    if (!airsim_img_request_vehicle_name_pair_vec_.empty()) {
+        RCLCPP_DEBUG(nh_->get_logger(), "Creating image response timer.");
+        int img_response_hz;
+        nh_->get_parameter("update_img_response_hz", img_response_hz);
+        img_timer_ = nh_->create_wall_timer(std::chrono::milliseconds(1000/img_response_hz), std::bind(&ROSWrapper::imgResponseTimerCb, this));
+
+        is_used_img_timer_cb_queue_ = true;
     }
 }
 
@@ -218,6 +259,85 @@ void ROSWrapper::setNansToZerosInPose(const VehicleSetting& vehicle_setting, Cam
         camera_setting.rotation.roll = vehicle_setting.rotation.roll;
 }
 
+// *********************
+// Camera methods
+// *********************
+void ROSWrapper::processAndPublishImgResponse(const std::vector<ImageResponse>& img_response_vec, const int img_response_idx, const std::string& vehicle_name)
+{
+    // todo add option to use airsim time (image_response.TTimePoint) like Gazebo /use_sim_time param
+    rclcpp::Time curr_ros_time = nh_->now();
+    int img_response_idx_internal = img_response_idx;
+
+    for (const auto& curr_img_response : img_response_vec) {
+        // todo publishing a tf for each capture type seems stupid. but it foolproofs us against render thread's async stuff, I hope.
+        // Ideally, we should loop over cameras and then captures, and publish only one tf.
+        // publish_camera_tf(curr_img_response, curr_ros_time, vehicle_name, curr_img_response.camera_name);  // TODO: re-enable
+
+        // todo simGetCameraInfo is wrong + also it's only for image type -1.
+        // msr::airlib::CameraInfo camera_info = airsim_client_.simGetCameraInfo(curr_img_response.camera_name);
+
+        // update timestamp of saved cam info msgs
+        camera_info_msg_vec_[img_response_idx_internal].header.stamp = curr_ros_time;
+        cam_info_pub_vec_[img_response_idx_internal]->publish(camera_info_msg_vec_[img_response_idx_internal]);
+
+        // DepthPlanar / DepthPerspective / DepthVis / DisparityNormalized
+        if (curr_img_response.pixels_as_float) {
+            image_pub_vec_[img_response_idx_internal].publish(getDepthImgMsgFromResponse(curr_img_response,
+                                                                                         curr_ros_time,
+                                                                                         curr_img_response.camera_name + "_optical"));
+        }
+        // Scene / Segmentation / SurfaceNormals / Infrared
+        else {
+            image_pub_vec_[img_response_idx_internal].publish(getImgMsgFromResponse(curr_img_response,
+                                                                                    curr_ros_time,
+                                                                                    curr_img_response.camera_name + "_optical"));
+        }
+        img_response_idx_internal++;
+    }
+}
+
+cv::Mat ROSWrapper::manualDecodeDepth(const ImageResponse& img_response) const
+{
+    cv::Mat mat(img_response.height, img_response.width, CV_32FC1, cv::Scalar(0));
+    int img_width = img_response.width;
+
+    for (int row = 0; row < img_response.height; row++)
+        for (int col = 0; col < img_width; col++)
+            mat.at<float>(row, col) = img_response.image_data_float[row * img_width + col];
+    return mat;
+}
+
+sensor_msgs::msg::Image::SharedPtr ROSWrapper::getDepthImgMsgFromResponse(const ImageResponse& img_response,
+                                                             const rclcpp::Time curr_ros_time,
+                                                             const std::string frame_id)
+{
+    // todo using img_response.image_data_float direclty as done get_img_msg_from_response() throws an error,
+    // hence the dependency on opencv and cv_bridge. however, this is an extremely fast op, so no big deal.
+    cv::Mat depth_img = manualDecodeDepth(img_response);
+    sensor_msgs::msg::Image::SharedPtr depth_img_msg = cv_bridge::CvImage(std_msgs::msg::Header(), "32FC1", depth_img).toImageMsg();
+    depth_img_msg->header.stamp = airsimTimestampToRos(img_response.time_stamp);
+    depth_img_msg->header.frame_id = frame_id;
+    return depth_img_msg;
+}
+
+sensor_msgs::msg::Image::SharedPtr ROSWrapper::getImgMsgFromResponse(const ImageResponse& img_response,
+                                                                  const rclcpp::Time curr_ros_time,
+                                                                  const std::string frame_id)
+{
+    sensor_msgs::msg::Image::SharedPtr img_msg_ptr = std::make_shared<sensor_msgs::msg::Image>();
+    img_msg_ptr->data = img_response.image_data_uint8;
+    img_msg_ptr->step = img_response.width * 3; // todo un-hardcode. image_width*num_bytes
+    img_msg_ptr->header.stamp = airsimTimestampToRos(img_response.time_stamp);
+    img_msg_ptr->header.frame_id = frame_id;
+    img_msg_ptr->height = img_response.height;
+    img_msg_ptr->width = img_response.width;
+    img_msg_ptr->encoding = "bgr8";
+    // if (is_vulkan_)  // TODO: re-enable?
+    //     img_msg_ptr->encoding = "rgb8";
+    img_msg_ptr->is_bigendian = 0;
+    return img_msg_ptr;
+}
+
 // todo have a special stereo pair mode and get projection matrix by calculating offset wrt drone body frame?
 sensor_msgs::msg::CameraInfo ROSWrapper::generateCamInfo(const std::string& camera_name,
                                                          const CameraSetting& camera_setting,
@@ -233,6 +353,57 @@ sensor_msgs::msg::CameraInfo ROSWrapper::generateCamInfo(const std::string& came
     cam_info_msg.k = { f_x, 0.0, capture_setting.width / 2.0, 0.0, f_x, capture_setting.height / 2.0, 0.0, 0.0, 1.0 };
     cam_info_msg.p = { f_x, 0.0, capture_setting.width / 2.0, 0.0, 0.0, f_x, capture_setting.height / 2.0, 0.0, 0.0, 0.0, 1.0, 0.0 };
     return cam_info_msg;
+}
+
+// *********************
+// General helpers
+// *********************
+rclcpp::Time ROSWrapper::airsimTimestampToRos(const msr::airlib::TTimePoint& stamp) const
+{
+    // airsim appears to use chrono::system_clock with nanosecond precision
+    std::chrono::nanoseconds dur(stamp);
+    std::chrono::time_point<std::chrono::system_clock> tp(dur);
+    rclcpp::Time cur_time = chronoTimestampToRos(tp);
+    return cur_time;
+}
+
+rclcpp::Time ROSWrapper::chronoTimestampToRos(const std::chrono::system_clock::time_point& stamp) const
+{
+    auto dur = std::chrono::duration<double>(stamp.time_since_epoch());
+    rclcpp::Time cur_time(dur.count());
+    return cur_time;
+}
+
+// ************************
+// Callbacks
+// ************************
+void ROSWrapper::imgResponseTimerCb()
+{
+    try {
+        int image_response_idx = 0;
+        for (const auto& airsim_img_request_vehicle_name_pair : airsim_img_request_vehicle_name_pair_vec_) {
+            const std::vector<ImageResponse>& img_response = airsim_client_images_.simGetImages(airsim_img_request_vehicle_name_pair.first, airsim_img_request_vehicle_name_pair.second);
+
+            if (img_response.size() == airsim_img_request_vehicle_name_pair.first.size()) {
+                processAndPublishImgResponse(img_response, image_response_idx, airsim_img_request_vehicle_name_pair.second);
+                image_response_idx += img_response.size();
+            }
+        }
+    }
+
+    catch (rpc::rpc_error& e) {
+        std::string msg = e.get_error().as<std::string>();
+        std::cout << "Exception raised by the API, didn't get image response." << std::endl
+                  << msg << std::endl;
+    }
+}
+
+// *********************
+// Getters
+// *********************
+rclcpp::Node::SharedPtr ROSWrapper::getNode()
+{
+    return nh_;
 }
 
 }  // namespace airsim_ros

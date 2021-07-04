@@ -14,7 +14,7 @@ int main(int argc, char ** argv)
     node->get_parameter("host_ip", host_ip);
 
     auto wrapper = std::make_shared<airsim_ros::ROSWrapper>(node, host_ip);
-    rclcpp::spin(node->get_node_base_interface());
+    rclcpp::spin(wrapper->getNode());
     rclcpp::shutdown();
 
     return 0;

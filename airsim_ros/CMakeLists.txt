@@ -19,17 +19,22 @@ set(RPC_LIB_INCLUDES " ${AIRSIM_ROOT}/external/rpclib/rpclib-2.3.0/include")
 set(RPC_LIB rpc) # name of .a file with lib prefix
 message(STATUS "found RPC_LIB_INCLUDES=${RPC_LIB_INCLUDES}")
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-  add_compile_options(-Wall -Wextra -Wpedantic)
-endif()
+# TODO: should we show warnings?
+# if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+#   add_compile_options(-Wall -Wextra -Wpedantic)
+# endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
+
+find_package(OpenCV REQUIRED)
 
 find_package(rclcpp REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(image_transport REQUIRED)
+find_package(cv_bridge REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(airsim_ros_interfaces REQUIRED)
@@ -41,11 +46,14 @@ include_directories(
   ${RPC_LIB_INCLUDES}
   ${AIRSIM_ROOT}/MavLinkCom/include
   ${AIRSIM_ROOT}/MavLinkCom/common_utils
+  ${OpenCV_INCLUDE_DIRS}
 )
 
 set(dependencies
   rclcpp
   image_transport
+  cv_bridge
+  std_msgs
   geometry_msgs
   sensor_msgs
   airsim_ros_interfaces
@@ -64,7 +72,7 @@ set(wrapper_lib ros_wrapper_core)
 add_library(${wrapper_lib} SHARED
   src/ros_wrapper.cpp
 )
-target_link_libraries(${wrapper_lib} ${settings_lib} yaml-cpp AirLib)
+target_link_libraries(${wrapper_lib} ${settings_lib} yaml-cpp AirLib ${OpenCV_LIBS})
 ament_target_dependencies(${wrapper_lib} ${dependencies})
 
 set(node_exe airsim_node)

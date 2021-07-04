@@ -15,14 +15,18 @@
 #include "vehicles/car/api/CarRpcLibClient.hpp"
 #include "airsim_ros/math_common.h"
 #include "yaml-cpp/yaml.h"
+#include "opencv2/opencv.hpp"
+#include <chrono>
 #include <unordered_map>
 #include <iostream>
 #include <memory>
 #include "rclcpp/rclcpp.hpp"
+#include <cv_bridge/cv_bridge.h>
 #include <tf2/LinearMath/Quaternion.h>
 #include <image_transport/image_transport.hpp>
 #include "sensor_msgs/msg/camera_info.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
+#include "std_msgs/msg/header.hpp"
 
 typedef msr::airlib::ImageCaptureBase::ImageRequest ImageRequest;
 typedef msr::airlib::ImageCaptureBase::ImageResponse ImageResponse;
@@ -49,6 +53,7 @@ public:
 
     void initializeRos();
     void initializeAirSim();
+    rclcpp::Node::SharedPtr getNode();
 
 private:
     // FIXME: VehicleROS causing crash
@@ -106,23 +111,39 @@ private:
     void setNansToZerosInPose(VehicleSetting& vehicle_setting) const;
     void setNansToZerosInPose(const VehicleSetting& vehicle_setting, CameraSetting& camera_setting) const;
 
+    // common ros helpers
+    rclcpp::Time chronoTimestampToRos(const std::chrono::system_clock::time_point& stamp) const;
+    rclcpp::Time airsimTimestampToRos(const msr::airlib::TTimePoint& stamp) const;
+
     // camera helpers
+    cv::Mat manualDecodeDepth(const ImageResponse& img_response) const;
+    sensor_msgs::msg::Image::SharedPtr getDepthImgMsgFromResponse(const ImageResponse& img_response, const rclcpp::Time curr_ros_time, const std::string frame_id);
     sensor_msgs::msg::CameraInfo generateCamInfo(const std::string& camera_name, const CameraSetting& camera_setting, const CaptureSetting& capture_setting) const;
+    sensor_msgs::msg::Image::SharedPtr getImgMsgFromResponse(const ImageResponse& img_response, const rclcpp::Time curr_ros_time, const std::string frame_id);
+
+    // publishers
+    void processAndPublishImgResponse(const std::vector<ImageResponse>& img_response_vec, const int img_response_idx, const std::string& vehicle_name);
+
+    // timer callbacks
+    void imgResponseTimerCb();
 
     rclcpp::Node::SharedPtr nh_;
+
+    // rclcpp objects
+    rclcpp::TimerBase::SharedPtr img_timer_;
 
     AIRSIM_MODE airsim_mode_ = AIRSIM_MODE::DRONE;
 
     msr::airlib::GeoPoint origin_geo_point_; // gps coord of unreal origin
 
-    SettingsParser airsim_settings_parser_;  // FIXME: causing crash
+    SettingsParser airsim_settings_parser_;
+    std::unordered_map<std::string, std::unique_ptr<VehicleROS>> vehicle_name_ptr_map_;
+    static const std::unordered_map<int, std::string> image_type_int_to_string_map_;
 
     std::string host_ip_;
     std::unique_ptr<msr::airlib::RpcLibClientBase> airsim_client_ = nullptr;
     // seperate busy connections to airsim, update in their own thread
     msr::airlib::RpcLibClientBase airsim_client_images_;
-
-    static const std::unordered_map<int, std::string> image_type_int_to_string_map_;
 
     typedef std::pair<std::vector<ImageRequest>, std::string> airsim_img_request_vehicle_name_pair;
     std::vector<airsim_img_request_vehicle_name_pair> airsim_img_request_vehicle_name_pair_vec_;
@@ -143,6 +164,9 @@ private:
     bool isENU_ = false;
     // tf2_ros::Buffer tf_buffer_;
     // tf2_ros::TransformListener tf_listener_;
+
+    //! Flags
+    bool is_used_img_timer_cb_queue_ = false;
 
 };
 

@@ -11,8 +11,10 @@
   <buildtool_depend>ament_cmake_python</buildtool_depend>
 
   <build_depend>image_transport</build_depend>
+  <build_depend>cv_bridge</build_depend>
 
   <!-- message packages -->
+  <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>airsim_ros_interfaces</depend>
