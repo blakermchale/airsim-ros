@@ -6,6 +6,7 @@
 int main(int argc, char ** argv)
 {
     rclcpp::init(argc, argv);
+    rclcpp::executors::MultiThreadedExecutor executor;
     std::string host_ip;
     auto node = rclcpp::Node::make_shared("airsim_ros_wrapper");
     // Declare parameters
@@ -14,7 +15,8 @@ int main(int argc, char ** argv)
     node->get_parameter("host_ip", host_ip);
 
     auto wrapper = std::make_shared<airsim_ros::ROSWrapper>(node, host_ip);
-    rclcpp::spin(wrapper->getNode());
+    executor.add_node(wrapper->getNode());
+    executor.spin();
     rclcpp::shutdown();
 
     return 0;

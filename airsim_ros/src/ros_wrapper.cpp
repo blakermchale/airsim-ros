@@ -28,7 +28,7 @@ ROSWrapper::ROSWrapper(rclcpp::Node::SharedPtr nh, const std::string& host_ip) :
         RCLCPP_INFO(nh_->get_logger(), "Setting ROS wrapper to CAR mode");
     }
     initializeRos();
-    std::cout << "ROSWrapper Initialized!\n";
+    RCLCPP_INFO(nh_->get_logger(), "ROSWrapper Initialized!");
 }
 
 void ROSWrapper::initializeRos()
@@ -148,6 +148,7 @@ void ROSWrapper::createRosPubsFromSettingsJson()
 
         is_used_img_timer_cb_queue_ = true;
     }
+    initializeAirSim();
 }
 
 // void ROSWrapper::appendStaticVehicleTf(VehicleROS* vehicle_ros, const VehicleSetting& vehicle_setting)
