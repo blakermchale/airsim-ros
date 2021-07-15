@@ -131,7 +131,7 @@ void ROSWrapper::createRosPubsFromSettingsJson()
 
                     image_pub_vec_.push_back(image_transporter->advertise(curr_vehicle_name + "/" + curr_camera_name + "/" + image_type_int_to_string_map_.at(capture_setting.image_type), 1));
                     cam_info_pub_vec_.push_back(nh_->create_publisher<sensor_msgs::msg::CameraInfo>(curr_vehicle_name + "/" + curr_camera_name + "/" + image_type_int_to_string_map_.at(capture_setting.image_type) + "/camera_info", 10));
-                    camera_info_msg_vec_.push_back(generateCamInfo(curr_camera_name, camera_setting, capture_setting));
+                    camera_info_msg_vec_.push_back(generateCamInfo(curr_vehicle_name + "/" + curr_camera_name, camera_setting, capture_setting));
                 }
             }
             // push back pair (vector of image captures, current vehicle name)
@@ -281,17 +281,18 @@ void ROSWrapper::processAndPublishImgResponse(const std::vector<ImageResponse>& 
         camera_info_msg_vec_[img_response_idx_internal].header.stamp = curr_ros_time;
         cam_info_pub_vec_[img_response_idx_internal]->publish(camera_info_msg_vec_[img_response_idx_internal]);
 
+        //NOTE(bmchale): added vehicle names for tf usage
         // DepthPlanar / DepthPerspective / DepthVis / DisparityNormalized
         if (curr_img_response.pixels_as_float) {
             image_pub_vec_[img_response_idx_internal].publish(getDepthImgMsgFromResponse(curr_img_response,
                                                                                          curr_ros_time,
-                                                                                         curr_img_response.camera_name + "_optical"));
+                                                                                         vehicle_name + "/" + curr_img_response.camera_name + "_optical"));
         }
         // Scene / Segmentation / SurfaceNormals / Infrared
         else {
             image_pub_vec_[img_response_idx_internal].publish(getImgMsgFromResponse(curr_img_response,
                                                                                     curr_ros_time,
-                                                                                    curr_img_response.camera_name + "_optical"));
+                                                                                    vehicle_name + "/" + curr_img_response.camera_name + "_optical"));
         }
         img_response_idx_internal++;
     }
